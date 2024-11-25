@@ -82,3 +82,7 @@
 .gclient_*
 *.lib
 *.dll
+my_experiment/*
+!my_experiment/code/kill_suspend_peer_process.sh
+!my_experiment/code/process_video_qrcode.sh
+!my_experiment/code/run.sh
