@@ -490,7 +490,7 @@ def show_fig(cfg):
     files = [delay_file, frame_size_file, rate_file]
     x_indexes = [2, 2, 0]
     y_indexes = [3, 3, 1]
-    labels = ["Delay(ms)", "FrameSize(bytes)", "Rate(Mbps)"]
+    labels = ["Delay(ms)", "FrameSize(bytes)", "Rate(kbps)"]
     show_multi_y_axis_fig(files, x_indexes, y_indexes, labels, "time stamp", 5, fig_dir + "/delay_frame_size_rate.png")
 
     files = [delay_file, frame_size_file, psnr_log_file]
