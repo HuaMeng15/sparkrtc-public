@@ -10,7 +10,7 @@ import("//third_party/libaom/options.gni")
 import("../../webrtc.gni")
 
 config("external_opencv_library") {
-  include_dirs = [ 
+  include_dirs = [
     "/usr/include/opencv4",
   ]
 }
@@ -211,8 +211,8 @@ rtc_library("video_coding") {
   ]
 
   libs = [ 
-    "opencv_core", 
-    "opencv_imgproc", 
+    "opencv_core",
+    "opencv_imgproc",
     "opencv_imgcodecs",
     "opencv_videoio",
     "opencv_highgui",
@@ -221,6 +221,7 @@ rtc_library("video_coding") {
     "opencv_features2d",
     "opencv_objdetect",
     "opencv_dnn",
+    "opencv_dnn_superres",
     "opencv_ml",
     "opencv_flann",
     "opencv_photo",
@@ -494,9 +495,28 @@ rtc_library("webrtc_h264") {
     "codecs/h264/include/x264.h",
   ]
 
-  
-  libs = ["/usr/lib/x86_64-linux-gnu/libx264.a"]
+  configs += [
+    ":external_opencv_library",
+  ]
 
+  libs = [
+    "/usr/lib/x86_64-linux-gnu/libx264.a",
+    "opencv_core",
+    "opencv_imgproc",
+    "opencv_imgcodecs",
+    "opencv_videoio",
+    "opencv_highgui",
+    "opencv_video",
+    "opencv_calib3d",
+    "opencv_features2d",
+    "opencv_objdetect",
+    "opencv_dnn",
+    "opencv_dnn_superres",
+    "opencv_ml",
+    "opencv_flann",
+    "opencv_photo",
+    "opencv_stitching",
+  ]
 
   defines = []
   deps = [

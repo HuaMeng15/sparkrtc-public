@@ -228,9 +228,11 @@ def extract_rate_and_framesize(recv_dir):
 def calc_delay_framesize_rate(recv_dir, res_dir):
     time_stamp_start = []
     time_stamp_end = []
+    decode_time_stamp_end = []
     start_frame_idx = []
     end_frame_idx = []
-    frame_delay = []
+    network_delay = []
+    delay_contains_decode = []
     frame_size = []
     end_frame_system_time_stamp = []
 
@@ -238,49 +240,57 @@ def calc_delay_framesize_rate(recv_dir, res_dir):
     send_file = recv_dir + "send.log"
     start_time_stamp_file = recv_dir + "start_stamp.log"
     end_time_stamp_file = recv_dir + "end_stamp.log"
+    decode_end_time_stamp_file = recv_dir + "decode_end_stamp.log"
     frame_size_file = res_dir + "frame_size.log"
     delay_file = res_dir + "delay.log"
+    delay_contains_decode_file = res_dir + "delay_contains_decode.log"
     rate_file = res_dir + "rate.log"
 
     os.system("rm -f " + start_time_stamp_file)
     os.system("rm -f " + end_time_stamp_file)
+    os.system("rm -rf " + decode_end_time_stamp_file)
     os.system("rm -f " + frame_size_file)
     os.system("rm -f " + delay_file)
+    os.system("rm -f " + delay_contains_decode_file)
     os.system("rm -f " + rate_file)
 
     end_stamp_command = "grep \"Time Stamp\" " + recv_file + " | awk \'{print $4}\' > " + end_time_stamp_file
     start_stamp_command = "grep \"Time Stamp\" " + send_file + " | awk \'{print $4}\' > " + start_time_stamp_file
+    decode_end_stamp_command = "grep \"Receiver Deocde Frame After Scale\" " + recv_file + " | awk \'{print $6}\' > " + decode_end_time_stamp_file
     os.system(start_stamp_command)
     os.system(end_stamp_command)
+    os.system(decode_end_stamp_command)
 
     read_data_from_file(start_time_stamp_file, 3, [[], start_frame_idx, time_stamp_start], ":")
     read_data_from_file(end_time_stamp_file, 5, [[], end_frame_idx, time_stamp_end, frame_size, end_frame_system_time_stamp], ":")
+    read_data_from_file(decode_end_time_stamp_file, 2, [[], decode_time_stamp_end], ":")
 
     idx = 0
-    for i in range(len(time_stamp_end)):
-        for j in range(idx, len(time_stamp_start)):
+    delay_record_length = min(len(time_stamp_start), len(time_stamp_end), len(decode_time_stamp_end))
+    for i in range(delay_record_length):
+        for j in range(idx, delay_record_length):
             if end_frame_idx[i] == start_frame_idx[j]:
                 idx = j
-                time_delay = time_stamp_end[i] - time_stamp_start[j]
-                if time_delay > 1000:
+                network_time_delay = time_stamp_end[i] - time_stamp_start[j]
+                decode_time_delay = decode_time_stamp_end[i] - end_frame_system_time_stamp[i]
+                network_delay.append(network_time_delay)
+                delay_contains_decode.append(network_time_delay + decode_time_delay)
+                if network_time_delay > 1000:
                     print("delay too long:", i, end_frame_idx[i])
-                    frame_delay.append(time_delay)
-                    # exit(1)
-                else:
-                    frame_delay.append(time_delay)
                 break
 
     rate_time, rate, frame_size_time, frame_size = extract_rate_and_framesize(recv_dir)
-    start_time = min(rate_time[0], frame_size_time[0], end_frame_system_time_stamp[0])
+    start_time = min(rate_time[0], frame_size_time[0], end_frame_system_time_stamp[0], decode_time_stamp_end[0])
     rate_time = [x - start_time for x in rate_time]
     frame_size_time = [x - start_time for x in frame_size_time]
     end_frame_system_time_stamp = [x - start_time for x in end_frame_system_time_stamp]
 
     write_data_to_file([range(1, len(end_frame_idx) + 1), end_frame_idx, frame_size_time, frame_size], frame_size_file)
     write_data_to_file([rate_time, rate], rate_file)
-    write_data_to_file([range(1, len(end_frame_idx) + 1), end_frame_idx, end_frame_system_time_stamp, frame_delay], delay_file)
+    write_data_to_file([range(1, len(end_frame_idx) + 1), end_frame_idx, end_frame_system_time_stamp, network_delay], delay_file)
+    write_data_to_file([range(1, len(end_frame_idx) + 1), end_frame_idx, end_frame_system_time_stamp, delay_contains_decode], delay_contains_decode_file)
 
-    return frame_delay
+    return network_delay, delay_contains_decode
 
 def decode_recv_video(cfg):
     re_extract_images = True
@@ -308,9 +318,9 @@ def decode_recv_video(cfg):
         ffmpeg_command = ffmpeg_path + " -r " + str(fps) + " -s " + str(cfg.width) + "x" + str(cfg.height) + " -i " +\
                             recv_video_path + " " + recv_raw_frames_dir + "/frame%d.png -y"
         os.system(ffmpeg_command)
-        received_frame_cnt = len(os.listdir(recv_raw_frames_dir))
+    received_frame_cnt = len(os.listdir(recv_raw_frames_dir))
 
-    delay = calc_delay_framesize_rate(recv_dir, res_dir)
+    network_delay, delay_contains_decode = calc_delay_framesize_rate(recv_dir, res_dir)
     drop_frames_index, receive_correspoding_send_index = scan_qrcode_fast(recv_raw_frames_dir, received_frame_cnt)
     print(f"Drop frames index: {drop_frames_index}")
     ssim = calc_ssim_fast(recv_raw_frames_dir, send_raw_frames_dir, ssim_res_dir, received_frame_cnt, receive_correspoding_send_index)
@@ -321,7 +331,7 @@ def decode_recv_video(cfg):
         f_receive_correspoding.write(str(idx + 1) + "," + str(receive_correspoding_send_index[idx]) + "\n")
     f_receive_correspoding.close()
 
-    return ssim, psnr, delay, drop_frames_index
+    return ssim, psnr, network_delay, delay_contains_decode, drop_frames_index
 
 def start_process(cmd, error_log_file=None):
     if error_log_file:
@@ -349,7 +359,7 @@ def send_and_recv_video(cfg):
     client_bin = root_dir + "out/Default/peerconnection_localvideo"
 
     # Can custormize ip and port
-    server_ip = "143.89.79.104"
+    server_ip = "143.89.46.221"
     port = "8888"
 
     recv_dir = "../result/" + cfg.output_dir + "/rec/" + cfg.data + "/"
@@ -389,18 +399,20 @@ def send_and_recv_video(cfg):
     kill_process(recv_process)
     kill_process(server_process)
 
-    ssim, psnr, delay, drop_frames_index = decode_recv_video(cfg)
+    ssim, psnr, network_delay, delay_contains_decode, drop_frames_index = decode_recv_video(cfg)
+    network_delay = np.array(network_delay)
+    delay_contains_decode = np.array(delay_contains_decode)
     ssim = np.array(ssim)
-    delay = np.array(delay)
     psnr = np.array(psnr)
 
     avg_ssim = np.mean(ssim)
-    avg_delay = np.mean(delay)
     avg_psnr = np.mean(psnr)
+    avg_delay = np.mean(network_delay)
+    avg_whole_delay = np.mean(delay_contains_decode)
+    print(f"ssim: {avg_ssim} psnr: {avg_psnr} delay: {avg_delay} whole_delay: {avg_whole_delay}")
 
-    print(f"ssim: {avg_ssim} psnr: {avg_psnr} delay: {avg_delay}")
     f_res_overal_file.write("------------------- " + str(cfg.output_dir) + " ---------------------------" + "\n")
-    f_res_overal_file.write(str(cfg.output_dir) + "," + str(avg_ssim) + "," + str(avg_psnr) + "," + str(avg_delay) + "," + str(len(drop_frames_index)) + "\n")
+    f_res_overal_file.write(str(cfg.output_dir) + "," + str(avg_ssim) + "," + str(avg_psnr) + "," + str(avg_delay) + "," + str(avg_whole_delay) + "," + str(len(drop_frames_index)) + "\n")
     f_res_overal_file.write("Drop frames count: " + str(len(drop_frames_index)) + "\n")
     f_res_overal_file.write("Drop frames index: " + str(drop_frames_index) + "\n")
     f_res_overal_file.close()
@@ -481,11 +493,13 @@ def show_fig(cfg):
     delay_file = res_dir + "delay.log"
     frame_size_file = res_dir + "frame_size.log"
     rate_file = res_dir + "rate.log"
+    delay_contains_decode_file = res_dir + "delay_contains_decode.log"
 
     show_experiment_fig(delay_file, fig_dir + "/delay.png", 0, 3, "Delay", "frame_index")
     show_experiment_fig(frame_size_file, fig_dir + "/frame_size.png", 0, 3, "frame_size", "frame_index", 5)
     show_experiment_fig(ssim_log_file, fig_dir + "/ssim.png", 0, 1, "SSIM", "frame_size")
     show_experiment_fig(psnr_log_file, fig_dir + "/psnr.png", 0, 1, "PSNR", "frame_size")
+    show_experiment_fig(delay_contains_decode_file, fig_dir + "/delay_contains_decode.png", 0, 3, "Delay", "frame_index")
 
     files = [delay_file, frame_size_file, rate_file]
     x_indexes = [2, 2, 0]
@@ -518,7 +532,18 @@ if __name__ == "__main__":
     if cfg.option == "gen_send_video":
         overlay_qrcode_to_video(cfg)
     elif cfg.option == "decode_recv_video":
-        decode_recv_video(cfg)
+        ssim, psnr, network_delay, delay_contains_decode, drop_frames_index = decode_recv_video(cfg)
+        network_delay = np.array(network_delay)
+        delay_contains_decode = np.array(delay_contains_decode)
+        ssim = np.array(ssim)
+        psnr = np.array(psnr)
+
+        avg_ssim = np.mean(ssim)
+        avg_psnr = np.mean(psnr)
+        avg_delay = np.mean(network_delay)
+        avg_whole_delay = np.mean(delay_contains_decode)
+
+        print(f"ssim: {avg_ssim} psnr: {avg_psnr} delay: {avg_delay} whole_delay: {avg_whole_delay}")
     elif cfg.option == "show_fig":
         show_fig(cfg)
     elif cfg.option == "send_and_recv":

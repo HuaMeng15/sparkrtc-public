@@ -12,13 +12,19 @@
 // Everything declared/defined in this header is only required when WebRTC is
 // build with H264 support, please do not move anything out of the
 // #ifdef unless needed and tested.
-#ifdef WEBRTC_USE_H264
+// #ifdef WEBRTC_USE_H264
 
 #include "modules/video_coding/codecs/h264/h264_decoder_impl.h"
 
 #include <algorithm>
 #include <limits>
 #include <memory>
+
+#include <opencv2/core.hpp>
+#include <opencv2/dnn_superres.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 extern "C" {
 #include "third_party/ffmpeg/libavcodec/avcodec.h"
@@ -344,6 +350,54 @@ int32_t H264DecoderImpl::RegisterDecodeCompleteCallback(
   return WEBRTC_VIDEO_CODEC_OK;
 }
 
+cv::Mat UpscaleImage(cv::Mat img, std::string modelName, std::string modelPath, int scale) {
+  cv::dnn_superres::DnnSuperResImpl sr;
+  sr.readModel(modelPath);
+  sr.setModel(modelName, scale);
+  // Output image
+  cv::Mat outputImage;
+  sr.upsample(img, outputImage);
+  return outputImage;
+}
+
+cv::Mat WebRTCFrameBuffer2CVMat(rtc::scoped_refptr<webrtc::VideoFrameBuffer> buffer, int height, int width) {
+  // Currently only support I420
+  cv::Mat y_plane(height, width, CV_8UC1, const_cast<uint8_t*>(buffer->ToI420()->DataY()));
+  cv::Mat u_plane(height / 4, width, CV_8UC1, const_cast<uint8_t*>(buffer->ToI420()->DataU()));
+  cv::Mat v_plane(height / 4, width, CV_8UC1, const_cast<uint8_t*>(buffer->ToI420()->DataV()));
+
+  // // Merge Y, U, and V planes into a single 3-channel YUV image
+  cv::Mat yu_image;
+  cv::Mat yuv_image;
+  cv::vconcat(y_plane, u_plane, yu_image);
+  cv::vconcat(yu_image, v_plane, yuv_image);
+  // Convert YUV to BGR for display
+  cv::Mat bgr_image;
+  cv::cvtColor(yuv_image, bgr_image, cv::COLOR_YUV2BGR_I420); // Convert to BGR format
+  return bgr_image;
+}
+
+rtc::scoped_refptr<webrtc::VideoFrameBuffer> CVMat2WebRTCFrameBuffer(cv::Mat& image) {
+  // Currently only support I420
+  cv::Mat yuv_image;
+  cv::cvtColor(image, yuv_image, cv::COLOR_BGR2YUV_I420);
+
+  // Get the data address of the YUV image
+  uint8_t* yuv_data = yuv_image.data;
+  int regenerated_width = yuv_image.cols;
+  int regenerated_height = yuv_image.rows / 1.5;
+
+  uint8_t* yPlane = yuv_data; // First plane (Y)
+  uint8_t* uPlane = yPlane + regenerated_width * regenerated_height; // Second plane (U)
+  uint8_t* vPlane = uPlane + (regenerated_width / 2) * (regenerated_height / 2); // Third plane (V)
+  return WrapI420Buffer(regenerated_width, regenerated_height,
+                        yPlane, regenerated_width,
+                        uPlane, regenerated_width / 2,
+                        vPlane, regenerated_width / 2,
+                        // To keep reference alive.
+                        [yuv_image] {});
+}
+
 int32_t H264DecoderImpl::Decode(const EncodedImage& input_image,
                                 bool /*missing_frames*/,
                                 int64_t /*render_time_ms*/) {
@@ -368,6 +422,8 @@ int32_t H264DecoderImpl::Decode(const EncodedImage& input_image,
     ReportError();
     return WEBRTC_VIDEO_CODEC_ERROR;
   }
+  auto start_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  RTC_LOG(LS_INFO) << "Receiver Deocde Frame Start:" << start_time;
   // packet.data has a non-const type, but isn't modified by
   // avcodec_send_packet.
   packet->data = const_cast<uint8_t*>(input_image.data());
@@ -609,6 +665,60 @@ int32_t H264DecoderImpl::Decode(const EncodedImage& input_image,
   const ColorSpace& color_space =
       input_image.ColorSpace() ? *input_image.ColorSpace()
                                : ExtractH264ColorSpace(av_context_.get());
+  auto before_scale_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  RTC_LOG(LS_INFO) << "Receiver Deocde Frame Before Scale:" << before_scale_time << " duration: " << (before_scale_time - start_time);
+
+  bool enable_scale = false;
+  if (enable_scale) {
+    int scale = 3;
+
+    int height = av_frame_->height;
+    int width = av_frame_->width;
+
+    RTC_LOG(LS_INFO) << "Decode scale initial frame width: " << width << " height: " << height << " scale: " << scale;
+
+    enum ScaleType {
+      original,
+      bicubic,
+      fsrcnn
+    };
+    int scale_type = ScaleType::fsrcnn;
+
+    if (scale_type == ScaleType::original) {
+      // use libyuv scale
+      cropped_buffer = cropped_buffer->Scale(width * scale, height * scale);
+    } else if (scale_type == ScaleType::bicubic) {
+      cv::Mat bgr_image = WebRTCFrameBuffer2CVMat(cropped_buffer, height, width);
+
+      // Upsample the image using bicubic interpolation
+      cv::Mat output_image;
+      cv::resize(bgr_image, output_image, cv::Size(width * scale, height * scale), 0, 0, cv::INTER_CUBIC);
+      // cv::imwrite("/home/huam/code/sparkrtc-public/my_experiment/result/static_1mbps/scale_3_1/rec/Beauty_1920x1080/test/bicubic_" + std::to_string(number) + ".png", output_image);
+
+      cropped_buffer = CVMat2WebRTCFrameBuffer(output_image);
+    } else if (scale_type == ScaleType::fsrcnn) {
+      cv::Mat bgr_image = WebRTCFrameBuffer2CVMat(cropped_buffer, height, width);
+
+      // Downscale the image to reduce runtime
+      cv::Mat downscale_image;
+      int downscale_radio = 2;
+      cv::resize(bgr_image, downscale_image, cv::Size(width / downscale_radio, height / downscale_radio), 0, 0, cv::INTER_CUBIC);
+
+      std::string path = "/home/huam/code/sparkrtc-public/modules/video_coding/codecs/h264/model/FSRCNN_x3.pb";
+      std::string modelName = "fsrcnn";
+      cv::Mat result_image = UpscaleImage(downscale_image, modelName, path, scale);
+      cv::Mat output_image;
+      cv::resize(result_image, output_image, cv::Size(width * scale, height * scale), 0, 0, cv::INTER_CUBIC);
+      // cv::imwrite("/home/huam/code/sparkrtc-public/my_experiment/result/static_1mbps/scale_3_1/rec/Beauty_1920x1080/test/fsrcnn_" + std::to_string(number) + ".png", result_image);
+
+      cropped_buffer = CVMat2WebRTCFrameBuffer(output_image);
+    } else {
+      RTC_LOG(LS_ERROR) << "[H264DecoderImpl::Decode] Unsupported scale type!";
+      return WEBRTC_VIDEO_CODEC_ERROR;
+    }
+  }
+  auto after_sr_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  RTC_LOG(LS_INFO) << "Receiver Deocde Frame After Scale:" << after_sr_time << " duration: " << (after_sr_time - before_scale_time);
 
   VideoFrame decoded_frame = VideoFrame::Builder()
                                  .set_video_frame_buffer(cropped_buffer)
@@ -654,4 +764,4 @@ void H264DecoderImpl::ReportError() {
 
 }  // namespace webrtc
 
-#endif  // WEBRTC_USE_H264
+// #endif  // WEBRTC_USE_H264
