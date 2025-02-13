@@ -44,6 +44,7 @@
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/strings/string_builder.h"
+#include "rtc_base/time_utils.h"
 #include "system_wrappers/include/metrics.h"
 #include "system_wrappers/include/ntp_time.h"
 
@@ -911,6 +912,7 @@ void RtpVideoStreamReceiver2::OnAssembledFrame(
   } else if (frame_transformer_delegate_) {
     frame_transformer_delegate_->TransformFrame(std::move(frame));
   } else {
+    RTC_LOG(LS_INFO) << "Time Stamp End:" << frame->first_seq_num() << ":" << frame->video_timing().receive_finish_ms;
     OnCompleteFrames(reference_finder_->ManageFrame(std::move(frame)));
   }
 }
