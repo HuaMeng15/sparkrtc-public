@@ -155,16 +155,7 @@ All prerequisites of the SparkRTC are needed.
 
 Also,
 
-download and install our version of `mahimahi` and `ffmpeg`.
-
-```bash
-git clone https://github.com/hkust-spark/ffmpeg.git
-cd ffmpeg
-./autogen.sh
-./configure
-make
-make install
-```
+download and install  `ffmpeg`, and if using Linux, download `mahimahi`.
 
 ```bash
 git clone https://github.com/LW945/mahimahi.git
